@@ -1,6 +1,7 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
 import warnings
+from unittest.mock import patch
 
 import pytest
 from langchain.agents import create_agent
@@ -12,6 +13,7 @@ from deepagents.middleware.subagents import (
     TASK_SYSTEM_PROMPT,
     SubAgentMiddleware,
 )
+from deepagents.middleware.tool_guardrails import ToolGuardrailsMiddleware
 
 
 @tool
@@ -256,3 +258,85 @@ class TestSubagentMiddlewareInit:
         )
         # This would error if the middleware was accumulated incorrectly
         assert agent is not None
+
+    def test_new_api_forwards_default_tool_guardrails(self) -> None:
+        """Middleware-level tool guardrails should be forwarded to subagent `create_agent` calls."""
+
+        def allow_input(tool_call_data: dict, agent_name: str) -> bool:
+            _ = (tool_call_data, agent_name)
+            return True
+
+        def allow_input_extra(tool_call_data: dict, agent_name: str) -> bool:
+            _ = (tool_call_data, agent_name)
+            return True
+
+        def allow_output(tool_output_data: dict, agent_name: str) -> bool:
+            _ = (tool_output_data, agent_name)
+            return True
+
+        with patch("deepagents.middleware.subagents.create_agent") as mock_create_agent:
+            SubAgentMiddleware(
+                backend=StateBackend(),
+                subagents=[
+                    {
+                        "name": "test",
+                        "description": "Test subagent",
+                        "system_prompt": "Test.",
+                        "model": "gpt-4o-mini",
+                        "tools": [],
+                    }
+                ],
+                tool_input_guardrails=[allow_input, allow_input_extra],
+                tool_output_guardrails=[allow_output],
+            )
+
+        assert mock_create_agent.called
+        _, kwargs = mock_create_agent.call_args
+        guardrail_middleware = next((m for m in kwargs["middleware"] if isinstance(m, ToolGuardrailsMiddleware)), None)
+        assert guardrail_middleware is not None
+        assert guardrail_middleware._tool_input_guardrails == [allow_input, allow_input_extra]
+        assert guardrail_middleware._tool_output_guardrails == [allow_output]
+
+    def test_new_api_subagent_tool_guardrails_override_defaults(self) -> None:
+        """Subagent-level tool guardrails should override middleware-level defaults."""
+
+        def default_input(tool_call_data: dict, agent_name: str) -> bool:
+            _ = (tool_call_data, agent_name)
+            return True
+
+        def subagent_input(tool_call_data: dict, agent_name: str) -> bool:
+            _ = (tool_call_data, agent_name)
+            return True
+
+        def default_output(tool_output_data: dict, agent_name: str) -> bool:
+            _ = (tool_output_data, agent_name)
+            return True
+
+        def subagent_output(tool_output_data: dict, agent_name: str) -> bool:
+            _ = (tool_output_data, agent_name)
+            return True
+
+        with patch("deepagents.middleware.subagents.create_agent") as mock_create_agent:
+            SubAgentMiddleware(
+                backend=StateBackend(),
+                subagents=[
+                    {
+                        "name": "test",
+                        "description": "Test subagent",
+                        "system_prompt": "Test.",
+                        "model": "gpt-4o-mini",
+                        "tools": [],
+                        "tool_input_guardrails": [subagent_input],
+                        "tool_output_guardrails": [subagent_output],
+                    }
+                ],
+                tool_input_guardrails=[default_input],
+                tool_output_guardrails=[default_output],
+            )
+
+        assert mock_create_agent.called
+        _, kwargs = mock_create_agent.call_args
+        guardrail_middleware = next((m for m in kwargs["middleware"] if isinstance(m, ToolGuardrailsMiddleware)), None)
+        assert guardrail_middleware is not None
+        assert guardrail_middleware._tool_input_guardrails == [subagent_input]
+        assert guardrail_middleware._tool_output_guardrails == [subagent_output]

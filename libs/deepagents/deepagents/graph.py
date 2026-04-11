@@ -34,6 +34,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.tool_guardrails import ToolGuardrailsMiddleware, ToolInputGuardrail, ToolOutputGuardrail
 
 BASE_AGENT_PROMPT = """You are a Deep Agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
 
@@ -96,6 +97,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     store: BaseStore | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    tool_input_guardrails: Sequence[ToolInputGuardrail] | None = None,
+    tool_output_guardrails: Sequence[ToolOutputGuardrail] | None = None,
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
@@ -212,6 +215,23 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Example: `interrupt_on={"edit_file": True}` pauses before every
             edit.
+        tool_input_guardrails: Optional tool input guardrails for agent-created
+            `create_agent` calls.
+
+            Each guardrail receives `(tool_call_data, agent_name)` and returns
+            `True` to allow the call or `False` to block it.
+
+            This applies to the main agent and is inherited by declarative
+            subagents unless they define their own `tool_input_guardrails`.
+        tool_output_guardrails: Optional tool output guardrails for
+            agent-created `create_agent` calls.
+
+            Each guardrail receives `(tool_output_data, agent_name)` and
+            returns `True` to allow the output or `False` to block it.
+
+            This applies to the main agent and is inherited by declarative
+            subagents unless they define their own
+            `tool_output_guardrails`.
         debug: Whether to enable debug mode. Passed through to `create_agent`.
         name: The name of the agent. Passed through to `create_agent`.
         cache: The cache to use for the agent. Passed through to `create_agent`.
@@ -238,6 +258,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         "tools": tools or [],
         "middleware": gp_middleware,
     }
+    if tool_input_guardrails is not None:
+        general_purpose_spec["tool_input_guardrails"] = tool_input_guardrails
+    if tool_output_guardrails is not None:
+        general_purpose_spec["tool_output_guardrails"] = tool_output_guardrails
     if interrupt_on is not None:
         general_purpose_spec["interrupt_on"] = interrupt_on
 
@@ -278,6 +302,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "tools": spec.get("tools", tools or []),
                 "middleware": subagent_middleware,
             }
+            subagent_tool_input_guardrails = spec.get("tool_input_guardrails", tool_input_guardrails)
+            if subagent_tool_input_guardrails is not None:
+                processed_spec["tool_input_guardrails"] = subagent_tool_input_guardrails
+            subagent_tool_output_guardrails = spec.get("tool_output_guardrails", tool_output_guardrails)
+            if subagent_tool_output_guardrails is not None:
+                processed_spec["tool_output_guardrails"] = subagent_tool_output_guardrails
             if subagent_interrupt_on is not None:
                 processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
@@ -292,6 +322,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
         TodoListMiddleware(),
     ]
+    if tool_input_guardrails or tool_output_guardrails:
+        deepagent_middleware.append(
+            ToolGuardrailsMiddleware(
+                agent_name=name or "deep-agent",
+                tool_input_guardrails=tool_input_guardrails,
+                tool_output_guardrails=tool_output_guardrails,
+            )
+        )
     if skills is not None:
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
     deepagent_middleware.extend(
@@ -300,6 +338,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             SubAgentMiddleware(
                 backend=backend,
                 subagents=inline_subagents,
+                tool_input_guardrails=tool_input_guardrails,
+                tool_output_guardrails=tool_output_guardrails,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),

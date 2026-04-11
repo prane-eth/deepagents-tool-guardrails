@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.tool_guardrails import ToolGuardrailsMiddleware, ToolInputGuardrail, ToolOutputGuardrail
 
 
 class SubAgent(TypedDict):
@@ -51,6 +52,14 @@ class SubAgent(TypedDict):
         skills: Skill source paths for SkillsMiddleware.
 
             List of paths to skill directories (e.g., `["/skills/user/", "/skills/project/"]`).
+        tool_input_guardrails: Guardrails to validate tool call inputs.
+
+            Each guardrail receives `(tool_call_data, agent_name)` and returns
+            `True` to allow or `False` to block.
+        tool_output_guardrails: Guardrails to validate tool call outputs.
+
+            Each guardrail receives `(tool_output_data, agent_name)` and
+            returns `True` to allow or `False` to block.
     """
 
     name: str
@@ -76,6 +85,12 @@ class SubAgent(TypedDict):
 
     skills: NotRequired[list[str]]
     """Skill source paths for SkillsMiddleware."""
+
+    tool_input_guardrails: NotRequired[Sequence[ToolInputGuardrail]]
+    """Guardrails that validate tool call inputs for this subagent."""
+
+    tool_output_guardrails: NotRequired[Sequence[ToolOutputGuardrail]]
+    """Guardrails that validate tool call outputs for this subagent."""
 
 
 class CompiledSubAgent(TypedDict):
@@ -302,6 +317,8 @@ def _get_subagents_legacy(
     default_tools: Sequence[BaseTool | Callable | dict[str, Any]],
     default_middleware: list[AgentMiddleware] | None,
     default_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+    default_tool_input_guardrails: Sequence[ToolInputGuardrail] | None,
+    default_tool_output_guardrails: Sequence[ToolOutputGuardrail] | None,
     subagents: Sequence[SubAgent | CompiledSubAgent],
     general_purpose_agent: bool,
 ) -> list[_SubagentSpec]:
@@ -314,6 +331,10 @@ def _get_subagents_legacy(
             no default middleware is applied.
         default_interrupt_on: The tool configs to use for the default general-purpose subagent. These
             are also the fallback for any subagents that don't specify their own tool configs.
+        default_tool_input_guardrails: Default tool input guardrails applied to
+            subagents that do not define their own guardrails.
+        default_tool_output_guardrails: Default tool output guardrails applied to
+            subagents that do not define their own guardrails.
         subagents: List of agent specifications or pre-compiled agents.
         general_purpose_agent: Whether to include a general-purpose subagent.
 
@@ -328,6 +349,14 @@ def _get_subagents_legacy(
     # Create general-purpose agent if enabled
     if general_purpose_agent:
         general_purpose_middleware = [*default_subagent_middleware]
+        if default_tool_input_guardrails or default_tool_output_guardrails:
+            general_purpose_middleware.append(
+                ToolGuardrailsMiddleware(
+                    agent_name="general-purpose",
+                    tool_input_guardrails=default_tool_input_guardrails,
+                    tool_output_guardrails=default_tool_output_guardrails,
+                )
+            )
         if default_interrupt_on:
             general_purpose_middleware.append(HumanInTheLoopMiddleware(interrupt_on=default_interrupt_on))
         general_purpose_subagent = create_agent(
@@ -366,6 +395,17 @@ def _get_subagents_legacy(
         interrupt_on = agent_.get("interrupt_on", default_interrupt_on)
         if interrupt_on:
             _middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+        tool_input_guardrails = agent_.get("tool_input_guardrails", default_tool_input_guardrails)
+        tool_output_guardrails = agent_.get("tool_output_guardrails", default_tool_output_guardrails)
+        if tool_input_guardrails or tool_output_guardrails:
+            _middleware.append(
+                ToolGuardrailsMiddleware(
+                    agent_name=agent_["name"],
+                    tool_input_guardrails=tool_input_guardrails,
+                    tool_output_guardrails=tool_output_guardrails,
+                )
+            )
 
         specs.append(
             {
@@ -509,6 +549,10 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         system_prompt: Instructions appended to main agent's system prompt
             about how to use the task tool.
         task_description: Custom description for the task tool.
+        tool_input_guardrails: Default tool input guardrails for any subagent
+            that doesn't define its own.
+        tool_output_guardrails: Default tool output guardrails for any subagent
+            that doesn't define its own.
 
     Example:
         ```python
@@ -558,6 +602,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         subagents: Sequence[SubAgent | CompiledSubAgent] | None = None,
         system_prompt: str | None = TASK_SYSTEM_PROMPT,
         task_description: str | None = None,
+        tool_input_guardrails: Sequence[ToolInputGuardrail] | None = None,
+        tool_output_guardrails: Sequence[ToolOutputGuardrail] | None = None,
         **deprecated_kwargs: Unpack[_DeprecatedKwargs],
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
@@ -594,6 +640,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         # Detect which API is being used
         using_new_api = backend is not None
         using_old_api = default_model is not None
+        self._tool_input_guardrails = tool_input_guardrails
+        self._tool_output_guardrails = tool_output_guardrails
 
         if using_old_api and not using_new_api:
             # Legacy API - build subagents from deprecated args
@@ -602,6 +650,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 default_tools=default_tools or [],
                 default_middleware=default_middleware,
                 default_interrupt_on=default_interrupt_on,
+                default_tool_input_guardrails=tool_input_guardrails,
+                default_tool_output_guardrails=tool_output_guardrails,
                 subagents=subagents or [],
                 general_purpose_agent=general_purpose_agent,
             )
@@ -661,6 +711,17 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             interrupt_on = spec.get("interrupt_on")
             if interrupt_on:
                 middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+            tool_input_guardrails = spec.get("tool_input_guardrails", self._tool_input_guardrails)
+            tool_output_guardrails = spec.get("tool_output_guardrails", self._tool_output_guardrails)
+            if tool_input_guardrails or tool_output_guardrails:
+                middleware.append(
+                    ToolGuardrailsMiddleware(
+                        agent_name=spec["name"],
+                        tool_input_guardrails=tool_input_guardrails,
+                        tool_output_guardrails=tool_output_guardrails,
+                    )
+                )
 
             specs.append(
                 {
