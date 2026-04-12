@@ -81,20 +81,20 @@ Both accept multiple guardrail functions.
 
 ```python
 def allow_safe_tool_input(tool_call_data: dict, agent_name: str) -> bool:
-  command = (tool_call_data.get("args") or {}).get("command", "")
-  if agent_name == "production-agent" and "rm -rf" in command:
-    return False
-  return True
+    command = (tool_call_data.get("args") or {}).get("command", "")
+    if agent_name == "production-agent" and "rm -rf" in command:
+        return False
+    return True
 
 
 def allow_safe_tool_output(tool_output_data: dict, agent_name: str) -> bool:
-  _ = (tool_output_data, agent_name)
-  return True
+    _ = (tool_output_data, agent_name)
+    return True
 
 
 agent = create_deep_agent(
-  tool_input_guardrails=[allow_safe_tool_input],
-  tool_output_guardrails=[allow_safe_tool_output],
+    tool_input_guardrails=[allow_safe_tool_input],
+    tool_output_guardrails=[allow_safe_tool_output],
 )
 ```
 
