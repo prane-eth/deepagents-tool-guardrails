@@ -71,6 +71,40 @@ agent = create_deep_agent(
 
 MCP is supported via [`langchain-mcp-adapters`](https://github.com/langchain-ai/langchain-mcp-adapters).
 
+### Tool Guardrails
+
+You can pass `tool_input_guardrails` and `tool_output_guardrails` while creating agents.
+Both accept multiple guardrail functions.
+
+- Input guardrail signature: `(request: ToolCallRequest, agent_name: str) -> bool`
+- Output guardrail signature: `(tool_result: ToolMessage | Command[Any], agent_name: str) -> bool`
+
+```python
+from typing import Any
+
+from langchain.agents.middleware.types import ToolCallRequest
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
+
+
+def allow_safe_tool_input(request: ToolCallRequest, agent_name: str) -> bool:
+    command = (request.tool_call.get("args") or {}).get("command", "")
+    if agent_name == "production-agent" and "rm -rf" in command:
+        return False
+    return True
+
+
+def allow_safe_tool_output(tool_result: ToolMessage | Command[Any], agent_name: str) -> bool:
+    _ = (tool_result, agent_name)
+    return True
+
+
+agent = create_deep_agent(
+    tool_input_guardrails=[allow_safe_tool_input],
+    tool_output_guardrails=[allow_safe_tool_output],
+)
+```
+
 ## Deep Agents CLI
 
 A pre-built coding agent in your terminal — similar to Claude Code or Cursor — powered by any LLM. One install command and you're up and running.

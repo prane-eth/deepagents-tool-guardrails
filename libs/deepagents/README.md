@@ -34,6 +34,13 @@ Applications like "Deep Research", "Manus", and "Claude Code" have gotten around
 - **[API Reference](https://reference.langchain.com/python/deepagents/)** — Full SDK reference documentation
 - **[Chat LangChain](https://chat.langchain.com)** - Chat interactively with the docs
 
+## Tool guardrails
+
+`create_deep_agent` supports `tool_input_guardrails` and `tool_output_guardrails`.
+Each argument accepts multiple guardrail functions, and each guardrail receives
+the typed tool request/result plus `agent_name` and returns `True` (allow) or
+`False` (block).
+
 ## 📕 Releases & Versioning
 
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.
